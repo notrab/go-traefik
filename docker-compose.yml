@@ -1,0 +1,61 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=DEBUG"
+    ports:
+      - "80:80"
+      - "8080:8080" # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - traefik-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - traefik-net
+
+  auth-service:
+    build: ./auth-service
+    environment:
+      - REDIS_URL=redis:6379
+    labels:
+      - "traefik.enable=true"
+      # Single router for all auth endpoints
+      - "traefik.http.routers.auth.rule=Host(`localhost`) && PathPrefix(`/auth`)"
+      - "traefik.http.routers.auth.service=auth-service"
+      - "traefik.http.services.auth-service.loadbalancer.server.port=8080"
+    networks:
+      - traefik-net
+
+  api-service:
+    build: ./api-service
+    labels:
+      - "traefik.enable=true"
+      # Protected API endpoints (require auth)
+      - "traefik.http.routers.api-protected.rule=Host(`localhost`) && PathPrefix(`/api`) && !Path(`/api/public`) && !Path(`/api/health`)"
+      - "traefik.http.routers.api-protected.service=api-service"
+      - "traefik.http.routers.api-protected.middlewares=api-auth"
+      # Public API endpoints (no auth required)
+      - "traefik.http.routers.api-public.rule=Host(`localhost`) && (Path(`/api/public`) || Path(`/api/health`))"
+      - "traefik.http.routers.api-public.service=api-service"
+      # Service configuration
+      - "traefik.http.services.api-service.loadbalancer.server.port=8081"
+      # ForwardAuth middleware
+      - "traefik.http.middlewares.api-auth.forwardauth.address=http://auth-service:8080/auth"
+      - "traefik.http.middlewares.api-auth.forwardauth.authResponseHeaders=X-User-ID,X-Rate-Limit"
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    driver: bridge
